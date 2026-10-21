@@ -1,0 +1,14 @@
+--- a/service/webcrypto/app.py
++++ b/service/webcrypto/app.py
+@@ -388,6 +388,11 @@
+         "SELECT * FROM mandates WHERE transfer_id = ?", (tid,)).fetchone()
+     if row is None:
+         return err("no mandate on this transfer", 404)
++    # FIXED: only the owner of the mandate may read it through the
++    # transfer it is attached to.
++    if row["owner"] != user:
++        return err("not your mandate", 403)
++
+     return jsonify({
+         "mandate_id": row["id"],
+         "transfer_id": row["transfer_id"],

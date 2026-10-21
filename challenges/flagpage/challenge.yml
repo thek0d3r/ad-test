@@ -1,0 +1,11 @@
+---
+# One A/D challenge. The directory name is free-form; `name` is what shows on
+# the scoreboard and is registered in the gameserver DB.
+name: FlagPage
+slug: flagpage                    # optional dir-safe id (default: name lowercased)
+port: 9100                        # TCP port the service listens on, on the vulnbox
+checker: checker:FlagPageService  # <module>:<Class> inside checker/  -> checkers.<slug>.checker:FlagPageService
+checker_timeout: 20               # optional, seconds (default 20)
+health_path: /health              # optional HTTP path checked after deploy ("" to skip)
+# pip:                            # optional extra pip deps for the checker container
+#   - requests

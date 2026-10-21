@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INQ Online</title>
+<style>
+  :root{--inq:#ff6200;--inq-dark:#e85400;--ink:#333;--muted:#767676;--line:#e5e5e5;--bg:#f4f4f4;--card:#fff;--field:#fafafa;--ok:#008a00;}
+  *{box-sizing:border-box} html,body{margin:0;padding:0}
+  body{font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased}
+  a{color:var(--inq-dark);text-decoration:none}
+  .topbar{background:var(--inq);color:#fff;height:64px;display:flex;align-items:center;padding:0 20px;gap:14px;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+  .lion{width:40px;height:40px;background:#fff;border-radius:3px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .brand{font-weight:700;font-size:20px} .brand small{font-weight:400;opacity:.9;font-size:14px;margin-left:4px}
+  .logout{color:#fff;border:1px solid #fff;padding:6px 14px;border-radius:3px;font-size:13px;cursor:pointer;background:transparent;margin-left:auto}
+  .logout:hover{background:rgba(255,255,255,.15)}
+  /* section switcher (Payments / e-Signing) */
+  .sections{background:#fff;border-bottom:1px solid var(--line);display:flex;padding:0 16px}
+  .sections .seg{max-width:960px;margin:0 auto;display:flex;width:100%}
+  .seg button{background:none;border:none;padding:15px 22px;font:inherit;font-weight:700;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent}
+  .seg button.active{color:var(--inq);border-bottom-color:var(--inq)}
+  .wrap{max-width:960px;margin:0 auto;padding:24px 16px 60px}
+  .auth{max-width:420px;margin:48px auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:22px;margin-bottom:18px}
+  .card h2{margin:0 0 4px;font-size:18px} .card .sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+  .tabs{display:flex;border-bottom:2px solid var(--line);margin-bottom:20px}
+  .tab{flex:1;text-align:center;padding:10px;cursor:pointer;font-weight:600;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px}
+  .tab.active{color:var(--inq);border-bottom-color:var(--inq)}
+  label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}
+  input,textarea{width:100%;padding:11px 12px;border:1px solid #ccc;border-radius:4px;font:inherit;background:var(--field);color:var(--ink)}
+  input:focus,textarea:focus{outline:none;border-color:var(--inq);background:#fff}
+  textarea{resize:vertical;min-height:60px}
+  .btn{background:var(--inq);color:#fff;border:none;border-radius:22px;padding:11px 26px;font:inherit;font-weight:700;cursor:pointer;margin-top:18px}
+  .btn:hover{background:var(--inq-dark)} .btn.sm{padding:7px 16px;font-size:13px;margin-top:0}
+  .btn.ghost{background:#fff;color:var(--inq);border:1px solid var(--inq)} .btn.ghost:hover{background:#fff7f2}
+  .msg{margin-top:14px;padding:10px 12px;border-radius:4px;font-size:13px;display:none}
+  .msg.err{background:#fdecec;color:#b00020;border:1px solid #f5c2c2;display:block}
+  .msg.ok{background:#e9f7e9;color:var(--ok);border:1px solid #bfe3bf;display:block}
+  .acct{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .acct .bal{font-size:30px;font-weight:700}
+  .acct .iban{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--muted);letter-spacing:.5px}
+  .pill{display:inline-block;background:#fff3eb;color:var(--inq-dark);font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px} @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .navrow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px} .navrow .btn{margin-top:0}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  td.amt{text-align:right;font-weight:600;white-space:nowrap}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;color:var(--muted);word-break:break-all}
+  .empty{color:var(--muted);font-size:14px;padding:18px 4px}
+  .hidden{display:none}
+  .detail{background:var(--field);border:1px solid var(--line);border-radius:5px;padding:14px;margin-top:12px;font-size:13.5px}
+  .detail .k{color:var(--muted);display:inline-block;min-width:120px;vertical-align:top}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:30px;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="lion"><svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true">
+    <path fill="#ff6200" d="M4 20c2-1 3-3 3-5 0-2 2-4 5-4 2 0 3 1 5 1 3 0 4-2 6-2 1 0 2 .6 2 1.6 0 1-.8 1.4-1.6 1.6.8.6 1.2 1.6 1.2 2.8 0 3-2.6 5.4-6 5.4H9c-2 0-4 .3-5 1.2V20z"/>
+    <circle cx="22.4" cy="11.4" r="1" fill="#fff"/></svg></span>
+  <span class="brand">INQ <small>Online</small></span>
+  <button id="logoutBtn" class="logout hidden" onclick="logout()">Log out</button>
+</div>
+
+<div id="sectionBar" class="sections hidden"><div class="seg">
+  <button id="secPay" class="active" onclick="showSection('pay')">Payments</button>
+  <button id="secSign" onclick="showSection('sign')">e-Signing</button>
+</div></div>
+
+<!-- auth -->
+<div id="authView" class="auth">
+  <div class="card">
+    <div class="tabs">
+      <div class="tab active" id="tabLogin" onclick="showTab('login')">Log in</div>
+      <div class="tab" id="tabReg" onclick="showTab('reg')">Open account</div>
+    </div>
+    <div id="loginForm">
+      <label>Username</label><input id="loginUser" placeholder="your username">
+      <label>Password</label><input id="loginPass" type="password" placeholder="your password">
+      <button class="btn" style="width:100%" onclick="doLogin()">Log in to INQ Online</button>
+    </div>
+    <div id="regForm" class="hidden">
+      <label>Choose a username</label><input id="regUser" placeholder="pick a username">
+      <label>Choose a password</label><input id="regPass" type="password" placeholder="pick a password">
+      <button class="btn" style="width:100%" onclick="doRegister()">Open my account</button>
+    </div>
+    <div id="authMsg" class="msg"></div>
+  </div>
+  <p class="foot">One account for INQ payments and e-Signing.</p>
+</div>
+
+<!-- app -->
+<div id="appView" class="wrap hidden">
+  <div class="card">
+    <h2>Payment account</h2><p class="sub">Current account · EUR</p>
+    <div class="acct">
+      <div><div class="bal" id="balance">€ 8.420,55</div><div class="iban" id="myIban">RO49 INQB …</div></div>
+      <span class="pill" id="myName">—</span>
+    </div>
+  </div>
+
+  <!-- ============ PAYMENTS SECTION ============ -->
+  <div id="section-pay">
+    <div class="navrow">
+      <button class="btn sm" onclick="showPanel('pay')">New payment</button>
+      <button class="btn sm ghost" onclick="showPanel('transfers');loadTransfers()">My transfers</button>
+      <button class="btn sm ghost" onclick="showPanel('mandates');loadMandates()">My mandates</button>
+      <button class="btn sm ghost" onclick="showPanel('feed');loadFeed()">Settlement feed</button>
+    </div>
+    <div id="panel-pay" class="card panel">
+      <h2>New payment</h2><p class="sub">Send money to another IBAN. The reference (memo) is stored with the transfer.</p>
+      <div class="grid2">
+        <div><label>Beneficiary IBAN</label><input id="payIban" placeholder="RO49INQB0000000000000000"></div>
+        <div><label>Amount (EUR)</label><input id="payAmount" placeholder="25.00"></div>
+      </div>
+      <label>Payment reference / memo</label><textarea id="payMemo" placeholder="e.g. Invoice 2026-114"></textarea>
+      <button class="btn" onclick="doPay()">Confirm payment</button>
+      <div id="payMsg" class="msg"></div><div id="payResult"></div>
+    </div>
+    <div id="panel-transfers" class="card panel hidden">
+      <h2>My transfers</h2><p class="sub">Click a row to view its reference.</p>
+      <table><thead><tr><th>Beneficiary</th><th>Date</th><th class="amt">Amount</th></tr></thead>
+        <tbody id="transfersBody"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody></table>
+      <div id="transferDetail"></div>
+    </div>
+    <div id="panel-mandates" class="card panel hidden">
+      <h2>Payment mandates</h2><p class="sub">A mandate secures a transfer with a confirmation secret.</p>
+      <div class="grid2">
+        <div><label>Transfer id</label><input id="mdTransfer" placeholder="transfer id"></div>
+        <div><label>Confirmation secret</label><input id="mdSecret" placeholder="a secret"></div>
+      </div>
+      <button class="btn sm" onclick="doMandate()">Add mandate</button>
+      <div id="mandateMsg" class="msg"></div>
+      <table style="margin-top:16px"><thead><tr><th>Reference</th><th>Transfer</th><th>Date</th></tr></thead>
+        <tbody id="mandatesBody"><tr><td colspan="3" class="empty">No mandates yet.</td></tr></tbody></table>
+      <div id="mandateDetail"></div>
+    </div>
+    <div id="panel-feed" class="card panel hidden">
+      <h2>Instant-payments settlement feed</h2><p class="sub">Public feed of settled instant payments — never the payment reference.</p>
+      <table><thead><tr><th>Transfer id</th><th>From → to</th><th class="amt">Amount</th></tr></thead>
+        <tbody id="feedBody"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- ============ E-SIGNING SECTION ============ -->
+  <div id="section-sign" class="hidden">
+    <div class="navrow">
+      <button class="btn sm" onclick="showPanel('order')">New order</button>
+      <button class="btn sm ghost" onclick="showPanel('orders');loadOrders()">My orders</button>
+      <button class="btn sm ghost" onclick="showPanel('registry');loadRegistry()">Registry</button>
+    </div>
+    <div id="panel-order" class="card panel">
+      <h2>New signing order</h2><p class="sub">The secret is protected by the settlement blob and share link; the vault is released against a ticket.</p>
+      <label>Order label</label><input id="oLabel" placeholder="e.g. INV-2026-114">
+      <div class="grid2">
+        <div><label>Confidential secret</label><input id="oSecret" placeholder="the order secret"></div>
+        <div><label>Vault value</label><input id="oVault" placeholder="released to an authorised signer"></div>
+      </div>
+      <button class="btn" onclick="doCreateOrder()">Submit order</button>
+      <div id="orderMsg" class="msg"></div><div id="orderResult"></div>
+    </div>
+    <div id="panel-orders" class="card panel hidden">
+      <h2>My orders</h2><p class="sub">Click an order to inspect it.</p>
+      <table><thead><tr><th>Label</th><th>Kind</th><th>Date</th></tr></thead>
+        <tbody id="ordersBody"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody></table>
+      <div id="orderDetail"></div>
+    </div>
+    <div id="panel-registry" class="card panel hidden">
+      <h2>Public order registry</h2><p class="sub">Every order's id and owner — never its secret or vault.</p>
+      <table><thead><tr><th>Order id</th><th>Owner</th><th>Label</th></tr></thead>
+        <tbody id="regBody"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <p class="foot">INQ Online · Payments and e-Signing</p>
+</div>
+
+<script>
+let TOKEN=localStorage.getItem("ic_token")||"", ME=JSON.parse(localStorage.getItem("ic_me")||"null");
+function showTab(w){
+  tabLogin.classList.toggle("active",w==="login");tabReg.classList.toggle("active",w==="reg");
+  loginForm.classList.toggle("hidden",w!=="login");regForm.classList.toggle("hidden",w!=="reg");setMsg("authMsg","");
+}
+function setMsg(id,t,k){const e=document.getElementById(id);e.textContent=t||"";e.className="msg"+(t?(" "+(k||"err")):"");}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function euro(a){return "€ "+esc(a);}
+function fmtIban(i){return (i||"").replace(/(.{4})/g,"$1 ").trim();}
+async function api(method,path,body,auth=true){
+  const h={"Content-Type":"application/json"};
+  if(auth&&TOKEN)h["Authorization"]="Bearer "+TOKEN;
+  const r=await fetch(path,{method,headers:h,body:body?JSON.stringify(body):undefined});
+  let d={};try{d=await r.json();}catch(e){}
+  return {ok:r.ok,status:r.status,data:d};
+}
+async function doRegister(){
+  const u=regUser.value.trim(),p=regPass.value; if(!u||!p){setMsg("authMsg","Fill in both fields.");return;}
+  const r=await api("POST","/api/register",{username:u,password:p},false);
+  if(!r.ok){setMsg("authMsg",r.data.error||"Could not open account.");return;} onLogin(r.data);
+}
+async function doLogin(){
+  const u=loginUser.value.trim(),p=loginPass.value; if(!u||!p){setMsg("authMsg","Fill in both fields.");return;}
+  const r=await api("POST","/api/login",{username:u,password:p},false);
+  if(!r.ok){setMsg("authMsg",r.data.error||"Could not log in.");return;} onLogin(r.data);
+}
+function onLogin(d){TOKEN=d.token;ME={username:d.username,iban:d.iban};
+  localStorage.setItem("ic_token",TOKEN);localStorage.setItem("ic_me",JSON.stringify(ME));enterApp();}
+function logout(){TOKEN="";ME=null;localStorage.removeItem("ic_token");localStorage.removeItem("ic_me");
+  appView.classList.add("hidden");sectionBar.classList.add("hidden");authView.classList.remove("hidden");logoutBtn.classList.add("hidden");}
+function enterApp(){
+  authView.classList.add("hidden");appView.classList.remove("hidden");sectionBar.classList.remove("hidden");logoutBtn.classList.remove("hidden");
+  myIban.textContent=fmtIban(ME.iban);myName.textContent=ME.username;showSection("pay");
+}
+function showSection(s){
+  secPay.classList.toggle("active",s==="pay");secSign.classList.toggle("active",s==="sign");
+  document.getElementById("section-pay").classList.toggle("hidden",s!=="pay");
+  document.getElementById("section-sign").classList.toggle("hidden",s!=="sign");
+  showPanel(s==="pay"?"pay":"order");
+}
+function showPanel(p){document.querySelectorAll(".panel").forEach(e=>e.classList.add("hidden"));
+  const el=document.getElementById("panel-"+p);if(el)el.classList.remove("hidden");}
+
+/* ---- payments ---- */
+async function doPay(){
+  const b=payIban.value.trim(),a=payAmount.value.trim(),m=payMemo.value;
+  if(!b||!a||!m){setMsg("payMsg","Fill in beneficiary, amount and reference.");return;}
+  const r=await api("POST","/api/transfers",{beneficiary:b,amount:a,memo:m});
+  if(!r.ok){setMsg("payMsg",r.data.error||"Payment failed.");return;}
+  setMsg("payMsg","Payment of "+euro(a)+" confirmed.","ok");
+  payResult.innerHTML='<div class="detail"><span class="k">Transfer id</span><span class="mono">'+esc(r.data.id)+'</span></div>';
+}
+async function loadTransfers(){
+  const r=await api("GET","/api/transfers");const tb=transfersBody;
+  const rows=r.data.transfers||[]; if(!r.ok||!rows.length){tb.innerHTML='<tr><td colspan="3" class="empty">'+(r.ok?'No transfers yet.':esc(r.data.error||'error'))+'</td></tr>';return;}
+  tb.innerHTML=rows.map(t=>'<tr style="cursor:pointer" onclick="viewTransfer(\''+esc(t.id)+'\')"><td class="mono">'+esc(t.beneficiary)+
+    '</td><td>'+new Date(t.created*1000).toLocaleDateString()+'</td><td class="amt">'+euro(t.amount)+'</td></tr>').join("");
+}
+async function viewTransfer(id){
+  const r=await api("GET","/api/transfers/"+id);const d=transferDetail;
+  if(!r.ok){d.innerHTML='<div class="detail">'+esc(r.data.error||"error")+'</div>';return;}
+  const t=r.data;
+  d.innerHTML='<div class="detail"><span class="k">To</span><span class="mono">'+esc(t.beneficiary)+'</span><br>'+
+    '<span class="k">Amount</span>'+euro(t.amount)+'<br><span class="k">Reference</span>'+esc(t.memo)+
+    '<br><span class="k">Transfer id</span><span class="mono">'+esc(t.id)+'</span></div>';
+}
+async function doMandate(){
+  const t=mdTransfer.value.trim(),s=mdSecret.value; if(!t||!s){setMsg("mandateMsg","Fill in transfer id and secret.");return;}
+  const r=await api("POST","/api/mandates",{transfer_id:t,secret:s});
+  if(!r.ok){setMsg("mandateMsg",r.data.error||"Could not add mandate.");return;}
+  setMsg("mandateMsg","Mandate "+esc(r.data.reference)+" created.","ok");loadMandates();
+}
+async function loadMandates(){
+  const r=await api("GET","/api/mandates");const tb=mandatesBody;
+  const rows=r.data.mandates||[]; if(!r.ok||!rows.length){tb.innerHTML='<tr><td colspan="3" class="empty">No mandates yet.</td></tr>';return;}
+  tb.innerHTML=rows.map(m=>'<tr style="cursor:pointer" onclick="viewMandate(\''+esc(m.id)+'\')"><td class="mono">'+esc(m.reference)+
+    '</td><td class="mono">'+esc(m.transfer_id).slice(0,16)+'…</td><td>'+new Date(m.created*1000).toLocaleDateString()+'</td></tr>').join("");
+}
+async function viewMandate(id){
+  const r=await api("GET","/api/mandates/"+id);const d=mandateDetail;
+  if(!r.ok){d.innerHTML='<div class="detail">'+esc(r.data.error||"error")+'</div>';return;}
+  const m=r.data;
+  d.innerHTML='<div class="detail"><span class="k">Reference</span><span class="mono">'+esc(m.reference)+'</span><br>'+
+    '<span class="k">Secret</span>'+esc(m.secret)+'<br><span class="k">Verify link</span><span class="mono">/api/verify/'+esc(m.mandate_id)+'</span></div>';
+}
+async function loadFeed(){
+  const r=await api("GET","/api/feed",null,false);const tb=feedBody;
+  const rows=r.data.transfers||[]; if(!rows.length){tb.innerHTML='<tr><td colspan="3" class="empty">No settled payments yet.</td></tr>';return;}
+  tb.innerHTML=rows.map(t=>'<tr><td class="mono">'+esc(t.id).slice(0,18)+'…</td><td class="mono">'+esc(t.sender)+' → '+esc(t.beneficiary).slice(0,12)+
+    '…</td><td class="amt">'+euro(t.amount)+'</td></tr>').join("");
+}
+
+/* ---- e-signing ---- */
+async function doCreateOrder(){
+  const l=oLabel.value.trim(),s=oSecret.value,v=oVault.value;
+  if(!l||!s||!v){setMsg("orderMsg","Fill in label, secret and vault.");return;}
+  const r=await api("POST","/api/orders",{label:l,secret:s,vault:v});
+  if(!r.ok){setMsg("orderMsg",r.data.error||"Could not submit.");return;}
+  setMsg("orderMsg","Order "+esc(r.data.label)+" submitted.","ok");
+  orderResult.innerHTML='<div class="detail"><span class="k">Order id</span><span class="mono">'+esc(r.data.id)+'</span></div>';
+}
+async function loadOrders(){
+  const r=await api("GET","/api/orders");const tb=ordersBody;
+  const rows=(r.data.orders||[]).filter(o=>o.kind==="order");
+  if(!r.ok||!rows.length){tb.innerHTML='<tr><td colspan="3" class="empty">No orders yet.</td></tr>';return;}
+  tb.innerHTML=rows.map(o=>'<tr style="cursor:pointer" onclick="viewOrder(\''+esc(o.id)+'\')"><td>'+esc(o.label)+
+    '</td><td>'+esc(o.kind)+'</td><td>'+new Date(o.created*1000).toLocaleDateString()+'</td></tr>').join("");
+}
+async function viewOrder(id){
+  const sec=await api("GET","/api/orders/"+id+"/secret");const d=orderDetail;
+  if(!sec.ok){d.innerHTML='<div class="detail">'+esc(sec.data.error||"error")+'</div>';return;}
+  d.innerHTML='<div class="detail"><span class="k">Order id</span><span class="mono">'+esc(id)+'</span><br>'+
+    '<span class="k">Secret (owner)</span>'+esc(sec.data.secret)+
+    '<div style="margin-top:10px"><button class="btn sm ghost" onclick="showBlob(\''+id+'\')">Settlement blob</button> '+
+    '<button class="btn sm ghost" onclick="showShare(\''+id+'\')">Share link</button> '+
+    '<button class="btn sm ghost" onclick="releaseVault(\''+id+'\')">Authorise &amp; release vault</button></div>'+
+    '<div id="orderExtra"></div></div>';
+}
+async function showBlob(id){const r=await api("GET","/api/orders/"+id+"/blob",null,false);
+  orderExtra.innerHTML='<div style="margin-top:10px"><span class="k">Blob nonce</span><span class="mono">'+esc(r.data.nonce)+
+    '</span><br><span class="k">Ciphertext</span><span class="mono">'+esc(r.data.ciphertext)+'</span></div>';}
+async function showShare(id){const r=await api("GET","/api/orders/"+id+"/share",null,false);
+  orderExtra.innerHTML='<div style="margin-top:10px"><span class="k">Share token</span><span class="mono">'+esc(r.data.token)+'</span></div>';}
+async function releaseVault(id){
+  const a=await api("POST","/api/orders/"+id+"/authorize");
+  if(!a.ok){orderExtra.innerHTML='<div style="margin-top:10px">'+esc(a.data.error||"authorize failed")+'</div>';return;}
+  const v=await api("GET","/api/vault/"+id+"?ticket="+encodeURIComponent(a.data.ticket),null,false);
+  orderExtra.innerHTML='<div style="margin-top:10px"><span class="k">Ticket</span><span class="mono">'+esc(a.data.ticket)+
+    '</span><br><span class="k">Vault</span>'+esc(v.data.vault!=null?v.data.vault:(v.data.error||""))+'</div>';
+}
+async function loadRegistry(){
+  const r=await api("GET","/api/registry",null,false);const tb=regBody;
+  const rows=(r.data.orders||[]).filter(o=>o.kind==="order");
+  if(!rows.length){tb.innerHTML='<tr><td colspan="3" class="empty">No orders yet.</td></tr>';return;}
+  tb.innerHTML=rows.map(o=>'<tr><td class="mono">'+esc(o.id).slice(0,18)+'…</td><td>'+esc(o.owner)+'</td><td>'+esc(o.label)+'</td></tr>').join("");
+}
+if(TOKEN&&ME){enterApp();}else{showTab("login");}
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+--- a/service/webcrypto/app.py
++++ b/service/webcrypto/app.py
+@@ -80,7 +80,10 @@
+ 
+ 
+ def share_key(order_id: str) -> bytes:
+-    return hashlib.sha256(b"share|" + order_id.encode()).digest()
++    # FIXED: mix the server-held key in so the share key is not
++    # derivable from the public order id.
++    return hmac.new(GATEWAY_KEY, b"share|" + order_id.encode(),
++                    hashlib.sha256).digest()
+ 
+ 
+ def ticket_for(order_id: str) -> str:

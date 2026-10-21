@@ -1,0 +1,12 @@
+--- a/service/webcrypto/app.py
++++ b/service/webcrypto/app.py
+@@ -631,6 +631,9 @@
+     row = db().execute("SELECT * FROM orders WHERE id = ?", (oid,)).fetchone()
+     if row is None:
+         return err("no such order", 404)
++    # FIXED: only the order owner may be issued a release ticket.
++    if row["owner"] != user:
++        return err("not your order", 403)
+     return jsonify({"id": row["id"], "ticket": ticket_for(row["id"])})
+ 
+ 

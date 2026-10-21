@@ -1,0 +1,11 @@
+---
+name: INQ Online
+slug: inq_online
+port: 9421
+checker: checker:INQOnlineService
+checker_timeout: 40
+num_payloads: 4
+flags_per_tick: 4
+health_path: /health
+pip:
+  - requests==2.32.3

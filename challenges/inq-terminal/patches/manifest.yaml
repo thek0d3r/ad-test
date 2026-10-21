@@ -1,0 +1,22 @@
+# Maps each reference patch to the exploit and flag store it addresses.
+# Each store has TWO independent memory-corruption routes; patching one must not
+# stop the other. The Docker image recompiles terminal.c for validation.
+service_file: service/terminal/terminal.c
+port: 9423
+vulns:
+  - patch:   vuln-s0a-note-overflow.patch
+    exploit: exploit_s0_a_tcache_poison.py
+    store:   0
+    marker:  'uint32_t dlen = (uint32_t)dl;'
+  - patch:   vuln-s0b-peeknote-oob.patch
+    exploit: exploit_s0_b_peeknote_oob.py
+    store:   0
+    marker:  'b64encode(regN + off, len, enc);'
+  - patch:   vuln-s1a-stream-seek.patch
+    exploit: exploit_s1_a_stream_seek.py
+    store:   1
+    marker:  'st->buf_off = off;'
+  - patch:   vuln-s1b-peekpin-oob.patch
+    exploit: exploit_s1_b_peekpin_oob.py
+    store:   1
+    marker:  'b64encode(regP + off, len, enc);'

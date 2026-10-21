@@ -1,0 +1,10 @@
+--- a/service/webcrypto/app.py
++++ b/service/webcrypto/app.py
+@@ -525,7 +525,6 @@
+         "mandate_id": row["id"],
+         "transfer_id": row["transfer_id"],
+         "reference": row["reference"],
+-        "secret": row["secret"],
+         "digest": row["digest"],
+         "valid": row["digest"] == digest_of(row["secret"]),
+         "created": row["created"],

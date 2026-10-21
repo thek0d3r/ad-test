@@ -1,0 +1,13 @@
+--- a/service/terminal/terminal.c
++++ b/service/terminal/terminal.c
+@@ -514,6 +514,10 @@
+             if (n != 5) { out_line(o, "ERR usage: SEEK <token> <handle> <off> <len>"); return; }
+             uint32_t off, len;
+             if (parse_u32(a[3], &off) || parse_u32(a[4], &len)) { out_line(o, "ERR bad args"); return; }
++            /* FIXED: a seek stays within the stream's own buffer. */
++            if (off < st->orig_off) off = st->orig_off;
++            if (off > st->orig_off + st->cap) off = st->orig_off + st->cap;
++            if (len > st->orig_off + st->cap - off) len = st->orig_off + st->cap - off;
+             st->buf_off = off;
+             st->len = len;
+             out_line(o, "OK");

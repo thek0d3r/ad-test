@@ -1,0 +1,10 @@
+--- a/service/terminal/terminal.c
++++ b/service/terminal/terminal.c
+@@ -400,6 +400,7 @@
+             long dl = b64decode(a[3], dec, sizeof dec);
+             if (dl < 0) { out_line(o, "ERR note is not valid base64 or too long"); return; }
+             uint32_t dlen = (uint32_t)dl;
++            if (dlen > SLOT - 4) dlen = SLOT - 4;  /* FIXED: bound to the slot */
+             /* a note slot carries a 4-byte length header, like a chunk size. */
+             if (s->note_off + 4 + dlen > REGSZ) dlen = REGSZ - s->note_off - 4;
+             memcpy(regN + s->note_off, &dlen, 4);

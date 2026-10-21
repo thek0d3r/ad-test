@@ -1,0 +1,8 @@
+name: flagpage
+services:
+  flagpage:
+    build: .
+    image: flagpage:latest
+    restart: unless-stopped
+    ports:
+      - "9100:9100"

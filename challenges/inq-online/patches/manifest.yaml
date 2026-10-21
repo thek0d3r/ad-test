@@ -1,0 +1,39 @@
+# Maps each reference patch to the exploit and flag store it addresses.
+# FOUR stores (0,1 = Payments; 2,3 = e-Signing), each with two independent
+# routes; patching one route must not stop the other, and a patch in one store
+# must not affect any other store.
+service_file: service/webcrypto/app.py
+port: 9421
+vulns:
+  - patch:   vuln-s0a-transfer-idor.patch
+    exploit: exploit_s0_a_transfer_idor.py
+    store:   0
+    marker:  'def read_transfer(tid):'
+  - patch:   vuln-s0b-receipt-overshare.patch
+    exploit: exploit_s0_b_receipt_overshare.py
+    store:   0
+    marker:  'def feed_detail(tid):'
+  - patch:   vuln-s1a-verify-overshare.patch
+    exploit: exploit_s1_a_verify_overshare.py
+    store:   1
+    marker:  'def verify_mandate(mandate_id):'
+  - patch:   vuln-s1b-mandate-idor.patch
+    exploit: exploit_s1_b_mandate_idor.py
+    store:   1
+    marker:  'def read_transfer_mandate(tid):'
+  - patch:   vuln-s2a-keystream-reuse.patch
+    exploit: exploit_s2_a_keystream_reuse.py
+    store:   2
+    marker:  'def blob_nonce(order)'
+  - patch:   vuln-s2b-predictable-sharekey.patch
+    exploit: exploit_s2_b_predictable_sharekey.py
+    store:   2
+    marker:  'def share_key(order_id: str) -> bytes:'
+  - patch:   vuln-s3a-authorize-oracle.patch
+    exploit: exploit_s3_a_authorize_oracle.py
+    store:   3
+    marker:  'def authorize(oid):'
+  - patch:   vuln-s3b-legacy-ticket.patch
+    exploit: exploit_s3_b_legacy_ticket.py
+    store:   3
+    marker:  'legacy_ticket(row["id"])'

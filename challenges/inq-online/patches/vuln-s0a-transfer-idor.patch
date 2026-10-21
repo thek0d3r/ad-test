@@ -1,0 +1,15 @@
+--- a/service/webcrypto/app.py
++++ b/service/webcrypto/app.py
+@@ -364,6 +364,12 @@
+     row = db().execute("SELECT * FROM transfers WHERE id = ?", (tid,)).fetchone()
+     if row is None:
+         return err("no such transfer", 404)
++    # FIXED: authentication is not authorisation -- only the sender
++    # may read a transfer. 404 (not 403) so the response does not
++    # confirm an id that the public feed already lists exists.
++    if row["sender"] != user:
++        return err("no such transfer", 404)
++
+     return jsonify({
+         "id": row["id"],
+         "sender": row["sender"],

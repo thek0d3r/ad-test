@@ -1,0 +1,11 @@
+--- a/service/webcrypto/app.py
++++ b/service/webcrypto/app.py
+@@ -593,7 +593,7 @@
+     row = db().execute("SELECT * FROM orders WHERE id = ?", (oid,)).fetchone()
+     if row is None:
+         return err("no such order", 404)
+-    nonce = blob_nonce(row)
++    nonce = bytes.fromhex(row["nonce"])  # FIXED: per-order nonce
+     ct = xor(row["secret"].encode(), keystream(GATEWAY_KEY, nonce, len(row["secret"].encode())))
+     return jsonify({"id": row["id"], "owner": row["owner"],
+                     "nonce": nonce.hex(), "ciphertext": ct.hex()})

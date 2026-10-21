@@ -1,0 +1,723 @@
+/*
+ * INQ Self-Service Terminal -- the raw-TCP C service for the INQ Bank A/D
+ * challenge.
+ *
+ * A self-service banking terminal: clients register, create "slips", and store
+ * a private NOTE and a sealed PIN on each slip. Each is read back by its owner
+ * over the terminal protocol -- the legitimate path the checker uses.
+ *
+ * TWO FLAG STORES
+ *   store 0 (PlaceID 1)  a slip's NOTE   put: NOTE   get: READNOTE (owner)
+ *   store 1 (PlaceID 2)  a slip's PIN    put: SEAL   get: READPIN  (owner)
+ *
+ * The slips live in two fixed in-process regions served by a small custom
+ * allocator that models a tcache-style freelist (a singly-linked free list
+ * whose "next" link is written into the first bytes of a freed slot). The PIN
+ * export path uses a FILE-like STREAM object (a buffer pointer + length + a
+ * fixed emit function) -- deliberately modelling the shape of a C stdio stream.
+ *
+ * The allocator's links and the stream's buffer pointer are REGION OFFSETS, not
+ * machine pointers, so the memory-corruption bugs are deterministic and do not
+ * depend on ASLR or on the host's libc. The stream's function pointer lives in
+ * a fixed table and is NEVER attacker-controlled, so none of the bugs can be
+ * turned into control-flow hijack -- and a seccomp filter kills execve/fork/
+ * clone regardless. Every bug here is strictly MEMORY DISCLOSURE: read another
+ * client's slip. No RCE, no root. (See exploits/WRITEUP.md for the four routes;
+ * the source carries no vulnerability markers by design.)
+ *
+ * PROTOCOL (newline-delimited UTF-8, one request per line; payloads base64 so a
+ * flag may contain any byte; replies start OK/ERR; MANIFEST and LIST send rows
+ * then a single ".").
+ *
+ *   HELLO                               OK terminal/1 [ INQ // SELF-SERVICE TERMINAL ]
+ *   STAT                                OK users=<n> slips=<n>
+ *   WHO                                 OK <user ...>                 (public)
+ *   REG  <user> <pass>                  OK <token>
+ *   AUTH <user> <pass>                  OK <token>
+ *   NEW  <token> <label>                OK <id>
+ *   NOTE <token> <id> <b64>             OK                            <- store 0 write
+ *   READNOTE <token> <id>               OK <b64>                      <- store 0 read
+ *   PEEKNOTE <token> <id> <off> <len>   OK <b64>
+ *   SEAL <token> <id> <b64>             OK                            <- store 1 write
+ *   READPIN <token> <id>                OK <b64>                      <- store 1 read
+ *   PEEKPIN <token> <id> <off> <len>    OK <b64>
+ *   OPEN <token> <id>                   OK <handle>
+ *   SEEK <token> <handle> <off> <len>   OK
+ *   EMIT <token> <handle>               OK <b64>
+ *   DROP <token> <id>                   OK
+ *   LIST <token>                        OK <n> / rows <id> <label> / .
+ *   MANIFEST                            OK <n> / rows <id> <owner> <label> <noff> <poff> / .
+ *   QUIT                                OK bye
+ *
+ * RESOURCE BOUNDS
+ *   MAX_USERS 4096 · MAX_SLIPS 4096 · SLOT 256 bytes · regions 1 MiB each
+ *   MAX_NOTE 512 · MAX_CONN 256 · MAX_LINE 8192 · idle timeout 30s
+ *   A full region or table REFUSES; it never evicts.
+ */
+
+#define _GNU_SOURCE
+#include <arpa/inet.h>
+#include <errno.h>
+#include <poll.h>
+#include <sys/prctl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/random.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <signal.h>
+#include <unistd.h>
+
+#include <seccomp.h>
+
+#define PORT_DEFAULT 9423
+#define MAX_USERS 4096
+#define MAX_SLIPS 4096
+#define MAX_STREAMS 4096
+#define MAX_CONN 256
+#define NSLOTS 4096
+#define SLOT 256u
+#define REGSZ ((uint32_t)(NSLOTS * SLOT))
+#define NIL 0xffffffffu
+#define MAX_NOTE 512
+#define MAX_LINE 8192
+#define IDLE_TIMEOUT_MS 30000
+#define NAMELEN 32
+#define LABELLEN 40
+#define TOKLEN 32
+
+/* ----------------------------------------------------------- base64 ------- */
+static const char B64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static int b64val(int c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+/* encode n bytes of src into out (must be >= 4*((n+2)/3)+1). returns length. */
+static size_t b64encode(const unsigned char *src, size_t n, char *out) {
+    size_t i = 0, o = 0;
+    while (i + 3 <= n) {
+        uint32_t v = (src[i] << 16) | (src[i + 1] << 8) | src[i + 2];
+        out[o++] = B64[(v >> 18) & 63];
+        out[o++] = B64[(v >> 12) & 63];
+        out[o++] = B64[(v >> 6) & 63];
+        out[o++] = B64[v & 63];
+        i += 3;
+    }
+    if (n - i == 1) {
+        uint32_t v = src[i] << 16;
+        out[o++] = B64[(v >> 18) & 63];
+        out[o++] = B64[(v >> 12) & 63];
+        out[o++] = '=';
+        out[o++] = '=';
+    } else if (n - i == 2) {
+        uint32_t v = (src[i] << 16) | (src[i + 1] << 8);
+        out[o++] = B64[(v >> 18) & 63];
+        out[o++] = B64[(v >> 12) & 63];
+        out[o++] = B64[(v >> 6) & 63];
+        out[o++] = '=';
+    }
+    out[o] = '\0';
+    return o;
+}
+
+/* decode src into out (must be >= 3*len/4). returns bytes, or -1 on bad input. */
+static long b64decode(const char *src, unsigned char *out, size_t cap) {
+    size_t n = strlen(src), o = 0;
+    if (n % 4) return -1;
+    for (size_t i = 0; i < n; i += 4) {
+        int a = b64val(src[i]), b = b64val(src[i + 1]);
+        int c = src[i + 2] == '=' ? -2 : b64val(src[i + 2]);
+        int d = src[i + 3] == '=' ? -2 : b64val(src[i + 3]);
+        if (a < 0 || b < 0 || c == -1 || d == -1) return -1;
+        if (o >= cap) return -1;
+        out[o++] = (a << 2) | (b >> 4);
+        if (c != -2) {
+            if (o >= cap) return -1;
+            out[o++] = ((b & 15) << 4) | (c >> 2);
+        }
+        if (d != -2) {
+            if (o >= cap) return -1;
+            out[o++] = ((c & 3) << 6) | d;
+        }
+    }
+    return (long)o;
+}
+
+/* ----------------------------------------------------------- state -------- */
+struct user {
+    int used;
+    char name[NAMELEN + 1];
+    char pass[NAMELEN + 1];
+    char token[TOKLEN + 1];
+};
+
+struct slip {
+    int used;
+    char owner[NAMELEN + 1];
+    char label[LABELLEN + 1];
+    uint32_t note_off, note_len;
+    uint32_t pin_off, pin_len;
+};
+
+struct stream {
+    int used;
+    char owner[NAMELEN + 1];
+    uint32_t buf_off;   /* current buffer pointer (region P offset) */
+    uint32_t len;       /* current length */
+    uint32_t orig_off;  /* the slot this stream was opened on */
+    uint32_t cap;       /* the slot capacity */
+    size_t (*emit)(const unsigned char *, uint32_t, char *);  /* fixed vtable */
+};
+
+static struct user users[MAX_USERS];
+static struct slip slips[MAX_SLIPS];
+static struct stream streams[MAX_STREAMS];
+
+static unsigned char regN[REGSZ];   /* note region */
+static unsigned char regP[REGSZ];   /* pin  region */
+/* Slot 0 is reserved so that offset 0 can serve as the free-list sentinel
+ * (an empty list / "no slot"); real slots start at SLOT. */
+static uint32_t freeN = 0, freeP = 0;
+static uint32_t bumpN = SLOT, bumpP = SLOT;
+
+static int n_users = 0, n_slips = 0;
+
+/* --------------------------------------------------------- allocator ------ */
+/* Models a tcache bin: the free list is singly linked through the first four
+ * bytes of each freed slot, as an offset into the region. */
+/* A valid free-list link is the sentinel 0, or a real slot: in range and
+ * SLOT-aligned. Anything else means the link was corrupted, and the list is
+ * abandoned rather than followed -- this keeps a corrupted link from ever
+ * dereferencing out of the region (which would crash the service: an attacker
+ * must never be able to take the box down). */
+static int link_ok(uint32_t off) {
+    return off == 0 || (off >= SLOT && off < REGSZ && off % SLOT == 0);
+}
+
+static uint32_t slot_alloc(unsigned char *reg, uint32_t *head, uint32_t *bump) {
+    if (*head != 0) {
+        uint32_t off = *head;
+        uint32_t next;
+        memcpy(&next, reg + off, sizeof next); /* next = slot->next */
+        if (!link_ok(next)) next = 0;
+        *head = next;
+        return off;
+    }
+    if (*bump + SLOT <= REGSZ) {
+        uint32_t off = *bump;
+        *bump += SLOT;
+        return off;
+    }
+    return 0; /* region full */
+}
+
+static void slot_free(unsigned char *reg, uint32_t *head, uint32_t off) {
+    uint32_t h = *head;
+    memcpy(reg + off, &h, sizeof h); /* slot->next = head */
+    *head = off;
+}
+
+static size_t emit_region(const unsigned char *base, uint32_t len, char *out) {
+    return b64encode(base, len, out);
+}
+
+/* ------------------------------------------------------------ helpers ----- */
+static struct user *user_by_name(const char *n) {
+    for (int i = 0; i < MAX_USERS; i++)
+        if (users[i].used && strcmp(users[i].name, n) == 0) return &users[i];
+    return NULL;
+}
+
+static const char *user_by_token(const char *t) {
+    if (!t || !*t) return NULL;
+    for (int i = 0; i < MAX_USERS; i++)
+        if (users[i].used && strcmp(users[i].token, t) == 0) return users[i].name;
+    return NULL;
+}
+
+static void hextoken(char *out) {
+    unsigned char raw[16];
+    if (getrandom(raw, sizeof raw, 0) != (ssize_t)sizeof raw) {
+        for (size_t i = 0; i < sizeof raw; i++) raw[i] = (unsigned char)(rand());
+    }
+    for (int i = 0; i < 16; i++) {
+        static const char h[] = "0123456789abcdef";
+        out[i * 2] = h[raw[i] >> 4];
+        out[i * 2 + 1] = h[raw[i] & 15];
+    }
+    out[32] = '\0';
+}
+
+static int parse_u32(const char *s, uint32_t *out) {
+    if (!s || !*s) return -1;
+    char *end;
+    unsigned long v = strtoul(s, &end, 10);
+    if (*end != '\0') return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
+/* split line into at most max tokens on single spaces; returns count */
+static int split(char *line, char **argv, int max) {
+    int n = 0;
+    char *p = line;
+    while (*p && n < max) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        argv[n++] = p;
+        while (*p && *p != ' ') p++;
+        if (*p) *p++ = '\0';
+    }
+    return n;
+}
+
+/* ---------------------------------------------------------- reply out ----- */
+struct out { char *buf; size_t len, cap; };
+
+static void out_init(struct out *o) {
+    o->cap = 1 << 16;
+    o->buf = malloc(o->cap);
+    o->len = 0;
+}
+static void out_reset(struct out *o) { o->len = 0; }
+static void out_puts(struct out *o, const char *s, size_t n) {
+    if (o->len + n + 1 > o->cap) {
+        while (o->len + n + 1 > o->cap) o->cap <<= 1;
+        o->buf = realloc(o->buf, o->cap);
+    }
+    memcpy(o->buf + o->len, s, n);
+    o->len += n;
+}
+static void out_line(struct out *o, const char *s) {
+    out_puts(o, s, strlen(s));
+    out_puts(o, "\n", 1);
+}
+
+/* ------------------------------------------------------- command dispatch - */
+static void handle(char *line, struct out *o) {
+    char *a[8];
+    char tmp[256];
+    /* a stable copy of the line for tokenising (bounded) */
+    int n = split(line, a, 8);
+    if (n == 0) return;
+    const char *cmd = a[0];
+
+    if (strcmp(cmd, "HELLO") == 0) {
+        out_line(o, "OK terminal/1 [ INQ // SELF-SERVICE TERMINAL ]");
+        return;
+    }
+
+    if (strcmp(cmd, "STAT") == 0) {
+        snprintf(tmp, sizeof tmp, "OK users=%d slips=%d", n_users, n_slips);
+        out_line(o, tmp);
+        return;
+    }
+
+    if (strcmp(cmd, "WHO") == 0) {
+        out_puts(o, "OK", 2);
+        int shown = 0;
+        for (int i = 0; i < MAX_USERS && shown < 200; i++)
+            if (users[i].used) {
+                out_puts(o, " ", 1);
+                out_puts(o, users[i].name, strlen(users[i].name));
+                shown++;
+            }
+        out_puts(o, "\n", 1);
+        return;
+    }
+
+    if (strcmp(cmd, "REG") == 0) {
+        if (n != 3) { out_line(o, "ERR usage: REG <user> <pass>"); return; }
+        if (strlen(a[1]) > NAMELEN || strlen(a[2]) > NAMELEN || !a[1][0]) {
+            out_line(o, "ERR user or pass out of range"); return;
+        }
+        if (user_by_name(a[1])) { out_line(o, "ERR already registered"); return; }
+        if (n_users >= MAX_USERS) { out_line(o, "ERR the register is full"); return; }
+        int i; for (i = 0; i < MAX_USERS && users[i].used; i++) {}
+        users[i].used = 1;
+        snprintf(users[i].name, sizeof users[i].name, "%s", a[1]);
+        snprintf(users[i].pass, sizeof users[i].pass, "%s", a[2]);
+        hextoken(users[i].token);
+        n_users++;
+        snprintf(tmp, sizeof tmp, "OK %s", users[i].token);
+        out_line(o, tmp);
+        return;
+    }
+
+    if (strcmp(cmd, "AUTH") == 0) {
+        if (n != 3) { out_line(o, "ERR usage: AUTH <user> <pass>"); return; }
+        struct user *u = user_by_name(a[1]);
+        if (!u || strcmp(u->pass, a[2]) != 0) { out_line(o, "ERR bad credentials"); return; }
+        snprintf(tmp, sizeof tmp, "OK %s", u->token);
+        out_line(o, tmp);
+        return;
+    }
+
+    if (strcmp(cmd, "NEW") == 0) {
+        if (n != 3) { out_line(o, "ERR usage: NEW <token> <label>"); return; }
+        const char *who = user_by_token(a[1]);
+        if (!who) { out_line(o, "ERR not authenticated"); return; }
+        if (strlen(a[2]) > LABELLEN || !a[2][0]) { out_line(o, "ERR label out of range"); return; }
+        if (n_slips >= MAX_SLIPS) { out_line(o, "ERR no free slips"); return; }
+        uint32_t noff = slot_alloc(regN, &freeN, &bumpN);
+        uint32_t poff = slot_alloc(regP, &freeP, &bumpP);
+        if (noff == 0 || poff == 0) { out_line(o, "ERR storage full"); return; }
+        int i; for (i = 0; i < MAX_SLIPS && slips[i].used; i++) {}
+        slips[i].used = 1;
+        snprintf(slips[i].owner, sizeof slips[i].owner, "%s", who);
+        snprintf(slips[i].label, sizeof slips[i].label, "%s", a[2]);
+        slips[i].note_off = noff; slips[i].note_len = 0;
+        slips[i].pin_off = poff; slips[i].pin_len = 0;
+        n_slips++;
+        snprintf(tmp, sizeof tmp, "OK %d", i);
+        out_line(o, tmp);
+        return;
+    }
+
+    /* slip-scoped commands share id resolution + ownership */
+    if (strcmp(cmd, "NOTE") == 0 || strcmp(cmd, "READNOTE") == 0 ||
+        strcmp(cmd, "PEEKNOTE") == 0 || strcmp(cmd, "SEAL") == 0 ||
+        strcmp(cmd, "READPIN") == 0 || strcmp(cmd, "PEEKPIN") == 0 ||
+        strcmp(cmd, "OPEN") == 0 || strcmp(cmd, "DROP") == 0) {
+        if (n < 3) { out_line(o, "ERR usage: <CMD> <token> <id> ..."); return; }
+        const char *who = user_by_token(a[1]);
+        if (!who) { out_line(o, "ERR not authenticated"); return; }
+        uint32_t id;
+        if (parse_u32(a[2], &id) != 0 || id >= MAX_SLIPS || !slips[id].used) {
+            out_line(o, "ERR no such slip"); return;
+        }
+        struct slip *s = &slips[id];
+        if (strcmp(s->owner, who) != 0) { out_line(o, "ERR not your slip"); return; }
+
+        if (strcmp(cmd, "NOTE") == 0) {
+            if (n != 4) { out_line(o, "ERR usage: NOTE <token> <id> <b64>"); return; }
+            unsigned char dec[MAX_NOTE];
+            long dl = b64decode(a[3], dec, sizeof dec);
+            if (dl < 0) { out_line(o, "ERR note is not valid base64 or too long"); return; }
+            uint32_t dlen = (uint32_t)dl;
+            /* a note slot carries a 4-byte length header, like a chunk size. */
+            if (s->note_off + 4 + dlen > REGSZ) dlen = REGSZ - s->note_off - 4;
+            memcpy(regN + s->note_off, &dlen, 4);
+            memcpy(regN + s->note_off + 4, dec, dlen);
+            s->note_len = dlen;
+            out_line(o, "OK");
+            return;
+        }
+        if (strcmp(cmd, "READNOTE") == 0) {
+            if (n != 3) { out_line(o, "ERR usage: READNOTE <token> <id>"); return; }
+            char enc[4 * ((SLOT + 2) / 3) + 8];
+            uint32_t len;
+            memcpy(&len, regN + s->note_off, 4);   /* length from the slot header */
+            if (len > SLOT) len = SLOT;
+            if (s->note_off + 4 + len > REGSZ) len = REGSZ - s->note_off - 4;
+            b64encode(regN + s->note_off + 4, len, enc);
+            out_puts(o, "OK ", 3);
+            out_puts(o, enc, strlen(enc));
+            out_puts(o, "\n", 1);
+            return;
+        }
+        if (strcmp(cmd, "PEEKNOTE") == 0) {
+            if (n != 5) { out_line(o, "ERR usage: PEEKNOTE <token> <id> <off> <len>"); return; }
+            uint32_t off, len;
+            if (parse_u32(a[3], &off) || parse_u32(a[4], &len)) { out_line(o, "ERR bad args"); return; }
+            if (off > REGSZ) off = 0;
+            if (len > REGSZ) len = REGSZ;
+            if (off + len > REGSZ) len = REGSZ - off;
+            char *enc = malloc((size_t)4 * ((len + 2) / 3) + 8);
+            b64encode(regN + off, len, enc);
+            out_puts(o, "OK ", 3);
+            out_puts(o, enc, strlen(enc));
+            out_puts(o, "\n", 1);
+            free(enc);
+            return;
+        }
+        if (strcmp(cmd, "SEAL") == 0) {
+            if (n != 4) { out_line(o, "ERR usage: SEAL <token> <id> <b64>"); return; }
+            unsigned char dec[SLOT];
+            long dl = b64decode(a[3], dec, sizeof dec);
+            if (dl < 0) { out_line(o, "ERR pin is not valid base64 or too long"); return; }
+            memcpy(regP + s->pin_off, dec, (size_t)dl);
+            s->pin_len = (uint32_t)dl;
+            out_line(o, "OK");
+            return;
+        }
+        if (strcmp(cmd, "READPIN") == 0) {
+            if (n != 3) { out_line(o, "ERR usage: READPIN <token> <id>"); return; }
+            char enc[4 * ((SLOT + 2) / 3) + 4];
+            uint32_t len = s->pin_len;
+            if (s->pin_off + len > REGSZ) len = REGSZ - s->pin_off;
+            b64encode(regP + s->pin_off, len, enc);
+            out_puts(o, "OK ", 3);
+            out_puts(o, enc, strlen(enc));
+            out_puts(o, "\n", 1);
+            return;
+        }
+        if (strcmp(cmd, "PEEKPIN") == 0) {
+            if (n != 5) { out_line(o, "ERR usage: PEEKPIN <token> <id> <off> <len>"); return; }
+            uint32_t off, len;
+            if (parse_u32(a[3], &off) || parse_u32(a[4], &len)) { out_line(o, "ERR bad args"); return; }
+            if (off > REGSZ) off = 0;
+            if (len > REGSZ) len = REGSZ;
+            if (off + len > REGSZ) len = REGSZ - off;
+            char *enc = malloc((size_t)4 * ((len + 2) / 3) + 8);
+            b64encode(regP + off, len, enc);
+            out_puts(o, "OK ", 3);
+            out_puts(o, enc, strlen(enc));
+            out_puts(o, "\n", 1);
+            free(enc);
+            return;
+        }
+        if (strcmp(cmd, "OPEN") == 0) {
+            if (n != 3) { out_line(o, "ERR usage: OPEN <token> <id>"); return; }
+            int h; for (h = 0; h < MAX_STREAMS && streams[h].used; h++) {}
+            if (h >= MAX_STREAMS) { out_line(o, "ERR no free streams"); return; }
+            streams[h].used = 1;
+            snprintf(streams[h].owner, sizeof streams[h].owner, "%s", who);
+            streams[h].buf_off = s->pin_off;
+            streams[h].len = s->pin_len;
+            streams[h].orig_off = s->pin_off;
+            streams[h].cap = SLOT;
+            streams[h].emit = emit_region;
+            snprintf(tmp, sizeof tmp, "OK %d", h);
+            out_line(o, tmp);
+            return;
+        }
+        if (strcmp(cmd, "DROP") == 0) {
+            if (n != 3) { out_line(o, "ERR usage: DROP <token> <id>"); return; }
+            slot_free(regN, &freeN, s->note_off);
+            slot_free(regP, &freeP, s->pin_off);
+            s->used = 0;
+            n_slips--;
+            out_line(o, "OK");
+            return;
+        }
+    }
+
+    /* stream-scoped commands */
+    if (strcmp(cmd, "SEEK") == 0 || strcmp(cmd, "EMIT") == 0) {
+        if (n < 3) { out_line(o, "ERR usage: <CMD> <token> <handle> ..."); return; }
+        const char *who = user_by_token(a[1]);
+        if (!who) { out_line(o, "ERR not authenticated"); return; }
+        uint32_t h;
+        if (parse_u32(a[2], &h) || h >= MAX_STREAMS || !streams[h].used) {
+            out_line(o, "ERR no such stream"); return;
+        }
+        struct stream *st = &streams[h];
+        if (strcmp(st->owner, who) != 0) { out_line(o, "ERR not your stream"); return; }
+
+        if (strcmp(cmd, "SEEK") == 0) {
+            if (n != 5) { out_line(o, "ERR usage: SEEK <token> <handle> <off> <len>"); return; }
+            uint32_t off, len;
+            if (parse_u32(a[3], &off) || parse_u32(a[4], &len)) { out_line(o, "ERR bad args"); return; }
+            st->buf_off = off;
+            st->len = len;
+            out_line(o, "OK");
+            return;
+        }
+        if (strcmp(cmd, "EMIT") == 0) {
+            if (n != 3) { out_line(o, "ERR usage: EMIT <token> <handle>"); return; }
+            uint32_t off = st->buf_off, len = st->len;
+            if (off > REGSZ) off = 0;
+            if (len > REGSZ) len = REGSZ;
+            if (off + len > REGSZ) len = REGSZ - off;
+            char *enc = malloc((size_t)4 * ((len + 2) / 3) + 8);
+            st->emit(regP + off, len, enc);
+            out_puts(o, "OK ", 3);
+            out_puts(o, enc, strlen(enc));
+            out_puts(o, "\n", 1);
+            free(enc);
+            return;
+        }
+    }
+
+    if (strcmp(cmd, "LIST") == 0) {
+        if (n != 2) { out_line(o, "ERR usage: LIST <token>"); return; }
+        const char *who = user_by_token(a[1]);
+        if (!who) { out_line(o, "ERR not authenticated"); return; }
+        int c = 0;
+        for (int i = 0; i < MAX_SLIPS; i++)
+            if (slips[i].used && strcmp(slips[i].owner, who) == 0) c++;
+        snprintf(tmp, sizeof tmp, "OK %d", c);
+        out_line(o, tmp);
+        for (int i = 0; i < MAX_SLIPS; i++)
+            if (slips[i].used && strcmp(slips[i].owner, who) == 0) {
+                snprintf(tmp, sizeof tmp, "%d %s", i, slips[i].label);
+                out_line(o, tmp);
+            }
+        out_line(o, ".");
+        return;
+    }
+
+    if (strcmp(cmd, "MANIFEST") == 0) {
+        int c = 0, shown = 0;
+        for (int i = 0; i < MAX_SLIPS; i++) if (slips[i].used) c++;
+        snprintf(tmp, sizeof tmp, "OK %d", c);
+        out_line(o, tmp);
+        for (int i = 0; i < MAX_SLIPS && shown < 500; i++)
+            if (slips[i].used) {
+                snprintf(tmp, sizeof tmp, "%d %s %s %u %u", i, slips[i].owner,
+                         slips[i].label, slips[i].note_off, slips[i].pin_off);
+                out_line(o, tmp);
+                shown++;
+            }
+        out_line(o, ".");
+        return;
+    }
+
+    if (strcmp(cmd, "QUIT") == 0) { out_line(o, "OK bye"); return; }
+
+    out_line(o, "ERR unknown command");
+}
+
+/* ------------------------------------------------------- connection loop -- */
+struct conn {
+    int fd;
+    char in[MAX_LINE + 2];
+    size_t inlen;
+};
+
+static struct conn conns[MAX_CONN];
+static int n_conns = 0;
+
+static void conn_close(struct pollfd *pfds, int idx) {
+    close(conns[idx].fd);
+    conns[idx] = conns[n_conns - 1];
+    pfds[idx + 1] = pfds[n_conns];
+    n_conns--;
+}
+
+static void install_seccomp(void) {
+    /* Default allow; explicitly KILL the syscalls that could spawn a shell or a
+     * new process. This is what makes RCE structurally impossible even if a
+     * memory bug were escalated: there is no way to execute a program.
+     *
+     * PR_SET_NO_NEW_PRIVS is required for an unprivileged process to load a
+     * seccomp filter (both on the host and inside a container). Without it
+     * seccomp_load() fails and the filter is NOT active, so set it first and
+     * refuse to run on failure rather than pretend to be hardened. */
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        perror("prctl(NO_NEW_PRIVS)");
+        _exit(1);
+    }
+    scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);
+    if (!ctx) { fprintf(stderr, "seccomp_init failed\n"); _exit(1); }
+    int killed[] = {
+        SCMP_SYS(execve), SCMP_SYS(execveat), SCMP_SYS(fork), SCMP_SYS(vfork),
+        SCMP_SYS(clone), SCMP_SYS(clone3), SCMP_SYS(ptrace),
+        SCMP_SYS(process_vm_readv), SCMP_SYS(process_vm_writev),
+    };
+    for (size_t i = 0; i < sizeof killed / sizeof killed[0]; i++)
+        seccomp_rule_add(ctx, SCMP_ACT_KILL, killed[i], 0);
+    if (seccomp_load(ctx) != 0) {
+        perror("seccomp_load");
+        _exit(1);
+    }
+    seccomp_release(ctx);
+    fprintf(stderr, "seccomp active: execve/fork/clone blocked\n");
+    fflush(stderr);
+}
+
+int main(void) {
+    const char *ps = getenv("TERMINAL_PORT");
+    int port = ps ? atoi(ps) : PORT_DEFAULT;
+    if (port <= 0 || port > 65535) port = PORT_DEFAULT;
+
+    signal(SIGPIPE, SIG_IGN);
+    install_seccomp();
+
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd < 0) { perror("socket"); return 1; }
+    int one = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) < 0) { perror("bind"); return 1; }
+    if (listen(lfd, 64) < 0) { perror("listen"); return 1; }
+    fprintf(stderr, "terminal listening on 0.0.0.0:%d\n", port);
+    fflush(stderr);
+
+    struct pollfd pfds[MAX_CONN + 1];
+    pfds[0].fd = lfd;
+    pfds[0].events = POLLIN;
+
+    struct out o;
+    out_init(&o);
+
+    for (;;) {
+        for (int i = 0; i < n_conns; i++) {
+            pfds[i + 1].fd = conns[i].fd;
+            pfds[i + 1].events = POLLIN;
+        }
+        int r = poll(pfds, n_conns + 1, IDLE_TIMEOUT_MS);
+        if (r < 0) { if (errno == EINTR) continue; break; }
+
+        if (pfds[0].revents & POLLIN) {
+            int cfd = accept(lfd, NULL, NULL);
+            if (cfd >= 0) {
+                if (n_conns >= MAX_CONN) {
+                    const char *m = "ERR too many connections\n";
+                    send(cfd, m, strlen(m), 0);
+                    close(cfd);
+                } else {
+                    struct timeval tv = {5, 0};
+                    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+                    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+                    conns[n_conns].fd = cfd;
+                    conns[n_conns].inlen = 0;
+                    n_conns++;
+                }
+            }
+        }
+
+        for (int i = 0; i < n_conns;) {
+            if (!(pfds[i + 1].revents & (POLLIN | POLLHUP | POLLERR))) { i++; continue; }
+            struct conn *c = &conns[i];
+            ssize_t got = recv(c->fd, c->in + c->inlen, MAX_LINE - c->inlen, 0);
+            if (got <= 0) { conn_close(pfds, i); continue; }
+            c->inlen += (size_t)got;
+
+            int closed = 0;
+            for (;;) {
+                char *nl = memchr(c->in, '\n', c->inlen);
+                if (!nl) break;
+                *nl = '\0';
+                size_t linelen = (size_t)(nl - c->in);
+                char line[MAX_LINE + 1];
+                memcpy(line, c->in, linelen + 1);
+                /* strip trailing CR */
+                if (linelen && line[linelen - 1] == '\r') line[linelen - 1] = '\0';
+                /* shift remaining bytes down */
+                size_t rest = c->inlen - (linelen + 1);
+                memmove(c->in, nl + 1, rest);
+                c->inlen = rest;
+
+                out_reset(&o);
+                int quit = (strncmp(line, "QUIT", 4) == 0);
+                handle(line, &o);
+                if (o.len) send(c->fd, o.buf, o.len, 0);
+                if (quit) { conn_close(pfds, i); closed = 1; break; }
+            }
+            if (!closed) {
+                if (c->inlen >= MAX_LINE) {
+                    const char *m = "ERR line too long\n";
+                    send(c->fd, m, strlen(m), 0);
+                    conn_close(pfds, i);
+                } else {
+                    i++;
+                }
+            }
+        }
+    }
+    return 0;
+}

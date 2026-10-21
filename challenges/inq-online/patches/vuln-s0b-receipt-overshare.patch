@@ -1,0 +1,10 @@
+--- a/service/webcrypto/app.py
++++ b/service/webcrypto/app.py
+@@ -432,7 +432,6 @@
+         "sender": row["sender"],
+         "beneficiary": row["beneficiary"],
+         "amount": row["amount"],
+-        "memo": row["memo"],
+         "digest": row["digest"],
+         "valid": row["digest"] == digest_of(row["memo"]),
+         "created": row["created"],

@@ -1,0 +1,17 @@
+--- a/service/terminal/terminal.c
++++ b/service/terminal/terminal.c
+@@ -425,11 +425,10 @@
+             if (n != 5) { out_line(o, "ERR usage: PEEKNOTE <token> <id> <off> <len>"); return; }
+             uint32_t off, len;
+             if (parse_u32(a[3], &off) || parse_u32(a[4], &len)) { out_line(o, "ERR bad args"); return; }
+-            if (off > REGSZ) off = 0;
+-            if (len > REGSZ) len = REGSZ;
+-            if (off + len > REGSZ) len = REGSZ - off;
++            if (off > SLOT - 4) off = SLOT - 4;            /* FIXED: own slip only */
++            if (len > SLOT - 4 - off) len = SLOT - 4 - off;
+             char *enc = malloc((size_t)4 * ((len + 2) / 3) + 8);
+-            b64encode(regN + off, len, enc);
++            b64encode(regN + s->note_off + 4 + off, len, enc);
+             out_puts(o, "OK ", 3);
+             out_puts(o, enc, strlen(enc));
+             out_puts(o, "\n", 1);

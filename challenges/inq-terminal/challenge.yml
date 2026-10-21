@@ -1,0 +1,9 @@
+---
+name: INQ Terminal
+slug: inq_terminal
+port: 9423
+checker: checker:INQTerminalService
+checker_timeout: 30
+num_payloads: 2
+flags_per_tick: 2
+health_path: ""

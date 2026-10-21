@@ -1,0 +1,20 @@
+services:
+  webcrypto:
+    build: ./webcrypto
+    image: webcrypto:latest
+    container_name: webcrypto
+    restart: unless-stopped
+    ports:
+      - "${WEBCRYPTO_PORT:-9421}:9421"
+    volumes:
+      - webcrypto-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9421/health',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 768m
+    pids_limit: 512
+volumes:
+  webcrypto-data:
